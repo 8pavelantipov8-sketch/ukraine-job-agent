@@ -1,4 +1,6 @@
-import os, sys, smtplib
+import os
+import sys
+import smtplib
 from email.mime.text import MIMEText
 from datetime import datetime
 
@@ -19,12 +21,10 @@ jobs = [
 ]
 
 subject = 'Top Ukraine Jobs Today' if MODE == 'daily' else 'Ukraine Weekly Market Report'
-body = 'Generated: ' + str(datetime.now()) + '
-
-'
-for t, loc, score in jobs:
-    body += f'{score} | {t} | {loc}
-'
+lines = [f'Generated: {datetime.now()}', '']
+for title, loc, score in jobs:
+    lines.append(f'{score} | {title} | {loc}')
+body = '\n'.join(lines)
 
 msg = MIMEText(body)
 msg['Subject'] = subject
