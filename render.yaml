@@ -1,0 +1,6 @@
+services:
+  - type: worker
+    name: ukraine-job-agent
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python worker.py
