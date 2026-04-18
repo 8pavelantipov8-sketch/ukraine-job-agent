@@ -5,20 +5,20 @@ import sqlite3
 import requests
 from email.mime.text import MIMEText
 from datetime import datetime
+
+TO_EMAIL = os.getenv('TO_EMAIL')
+FROM_EMAIL = os.getenv('FROM_EMAIL')
+SMTP_HOST = os.getenv('SMTP_HOST', 'smtp.gmail.com')
+SMTP_USER = os.getenv('SMTP_USER')
+SMTP_PASS = os.getenv('SMTP_PASS')
+DB = 'jobs.db'
   
-  TO_EMAIL = os.getenv('TO_EMAIL')
-  FROM_EMAIL = os.getenv('FROM_EMAIL')
-  SMTP_HOST = os.getenv('SMTP_HOST', 'smtp.gmail.com')
-  SMTP_USER = os.getenv('SMTP_USER')
-  SMTP_PASS = os.getenv('SMTP_PASS')
-  DB = 'jobs.db'
-  
-  MODE = 'daily'
-  if len(sys.argv) > 1:
+MODE = 'daily'
+if len(sys.argv) > 1:
       MODE = sys.argv[1].replace('--', '')
   
-  conn = sqlite3.connect(DB)
-  cur = conn.cursor()
+conn = sqlite3.connect(DB)
+cur = conn.cursor()
   cur.execute('CREATE TABLE IF NOT EXISTS sent_jobs (job_id TEXT PRIMARY KEY, sent_at TEXT)')
   conn.commit()
   
@@ -32,8 +32,8 @@ from datetime import datetime
           pass
       return jobs
   
-  jobs = fetch_jobs()
-  new_jobs = []
+jobs = fetch_jobs()
+new_jobs = []
   for job in jobs:
       cur.execute('SELECT 1 FROM sent_jobs WHERE job_id=?', (job['id'],))
       if cur.fetchone() is None:
@@ -41,11 +41,11 @@ from datetime import datetime
           cur.execute('INSERT INTO sent_jobs(job_id, sent_at) VALUES(?, ?)', (job['id'], datetime.now().astimezone().isoformat()))
   conn.commit()
   
-  if not new_jobs:
+if not new_jobs:
       print('no new jobs')
       sys.exit(0)
   
-  subject = 'Top Ukraine Jobs Today' if MODE == 'daily' else 'Ukraine Weekly Market Report'
+subject = 'Top Ukraine Jobs Today' if MODE == 'daily' else 'Ukraine Weekly Market Report'
   lines = ['Generated: ' + datetime.now().strftime('%Y-%m-%d %H:%M:%S'), '']
   for job in new_jobs:
       lines.append(f"{job['score']} | {job['title']} | {job['location']}")
