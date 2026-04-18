@@ -38,7 +38,7 @@ for job in jobs:
     cur.execute('SELECT 1 FROM sent_jobs WHERE job_id=?', (job['id'],))
     if cur.fetchone() is None:
         new_jobs.append(job)
-        cur.execute('INSERT INTO sent_jobs(job_id, sent_at) VALUES(?, ?)', (job['id'], datetime.utcnow().isoformat()))
+        cur.execute('INSERT INTO sent_jobs(job_id, sent_at) VALUES(?, ?)', (job['id'], datetime.now().astimezone().isoformat().isoformat()))
 conn.commit()
 
 if not new_jobs:
