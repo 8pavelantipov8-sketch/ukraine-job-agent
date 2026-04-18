@@ -1,10 +1,10 @@
-  import os
-  import sys
-  import smtplib
-  import sqlite3
-  import requests
-  from email.mime.text import MIMEText
-  from datetime import datetime
+import os
+import sys
+import smtplib
+import sqlite3
+import requests
+from email.mime.text import MIMEText
+from datetime import datetime
   
   TO_EMAIL = os.getenv('TO_EMAIL')
   FROM_EMAIL = os.getenv('FROM_EMAIL')
