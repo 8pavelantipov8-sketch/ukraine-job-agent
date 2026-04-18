@@ -47,7 +47,8 @@ subject = 'Top Ukraine Jobs Today' if MODE == 'daily' else 'Ukraine Weekly Marke
 lines = [f'Generated: {datetime.now()}', '']
 for title, loc, score in new_jobs:
     lines.append(f'{score} | {title} | {loc}')
-body = '\n'.join(lines)
+body = '
+'.join(lines)
 
 msg = MIMEText(body)
 msg['Subject'] = subject
