@@ -1,6 +1,13 @@
 services:
-  - type: worker
-    name: ukraine-job-agent
+  - type: cron
+    name: ukraine-job-agent-daily
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python worker.py
+    startCommand: python worker.py --daily
+    schedule: "0 10 * * *"
+  - type: cron
+    name: ukraine-job-agent-weekly
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python worker.py --weekly
+    schedule: "0 10 * * 0"
