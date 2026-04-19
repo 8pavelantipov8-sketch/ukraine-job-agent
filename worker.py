@@ -1,7 +1,7 @@
 import os
 import sys
 import smtplib
-import sqlite3
+import psycopg2
 import requests
 from email.mime.text import MIMEText
 from datetime import datetime
@@ -9,22 +9,23 @@ from datetime import datetime
 # ---------------------------------------------------------------------------
 # Config from environment
 # ---------------------------------------------------------------------------
-TO_EMAIL  = os.getenv('TO_EMAIL')
-FROM_EMAIL = os.getenv('FROM_EMAIL')
-SMTP_HOST  = os.getenv('SMTP_HOST', 'smtp.gmail.com')
-SMTP_USER  = os.getenv('SMTP_USER')
-SMTP_PASS  = os.getenv('SMTP_PASS')
-DB = 'jobs.db'
+TO_EMAIL     = os.getenv('TO_EMAIL')
+FROM_EMAIL   = os.getenv('FROM_EMAIL')
+SMTP_HOST    = os.getenv('SMTP_HOST', 'smtp.gmail.com')
+SMTP_USER    = os.getenv('SMTP_USER')
+SMTP_PASS    = os.getenv('SMTP_PASS')
+DATABASE_URL = os.getenv('DATABASE_URL')   # provided automatically by Render PostgreSQL
 
 # ---------------------------------------------------------------------------
-# FIX 1: Validate all required env vars at startup — fail fast with a clear
-#         message instead of crashing deep inside smtplib with a TypeError.
+# FIX 1 (from Python audit): Validate all required env vars at startup.
+# FIX 2 (from YAML audit):   DATABASE_URL added — replaces ephemeral SQLite.
 # ---------------------------------------------------------------------------
 required = {
-    'TO_EMAIL':   TO_EMAIL,
-    'FROM_EMAIL': FROM_EMAIL,
-    'SMTP_USER':  SMTP_USER,
-    'SMTP_PASS':  SMTP_PASS,
+    'TO_EMAIL':     TO_EMAIL,
+    'FROM_EMAIL':   FROM_EMAIL,
+    'SMTP_USER':    SMTP_USER,
+    'SMTP_PASS':    SMTP_PASS,
+    'DATABASE_URL': DATABASE_URL,
 }
 missing = [k for k, v in required.items() if not v]
 if missing:
@@ -32,39 +33,42 @@ if missing:
 
 # ---------------------------------------------------------------------------
 # CLI argument / mode parsing
+# FIX 3 (from Python audit): Reject unknown modes explicitly.
+# FIX 4 (from YAML audit):   startCommand uses worker.py — this file matches.
 # ---------------------------------------------------------------------------
 MODE = 'daily'
 if len(sys.argv) > 1:
     MODE = sys.argv[1].replace('--', '').lower()
 
-# FIX 6 (minor): Reject unknown modes instead of silently accepting them.
 VALID_MODES = {'daily', 'weekly'}
 if MODE not in VALID_MODES:
     sys.exit(f"[ERROR] Unknown mode '{MODE}'. Valid options: {VALID_MODES}")
 
 # ---------------------------------------------------------------------------
-# Database setup
-# FIX 2: Wrap all DB work in try/finally so the connection is always closed,
-#         even if the script exits early. Also prune stale rows (>30 days)
-#         so re-posted jobs are not permanently suppressed.
+# Database setup — PostgreSQL (persistent across Render deploys)
+# FIX 2 (from YAML audit): SQLite was ephemeral; jobs.db was wiped on every
+#   deploy, causing all jobs to look "new" and duplicate emails to be sent.
+#   psycopg2 + Render's managed PostgreSQL persists dedup state permanently.
 # ---------------------------------------------------------------------------
-conn = sqlite3.connect(DB)
+conn = psycopg2.connect(DATABASE_URL)
 try:
     cur = conn.cursor()
-    cur.execute(
-        'CREATE TABLE IF NOT EXISTS sent_jobs (job_id TEXT PRIMARY KEY, sent_at TEXT)'
-    )
-    # Prune records older than 30 days to allow re-posted jobs to resurface.
-    cur.execute("DELETE FROM sent_jobs WHERE sent_at < datetime('now', '-30 days')")
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS sent_jobs (
+            job_id  TEXT PRIMARY KEY,
+            sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+    ''')
+    # Prune records older than 30 days so re-posted jobs can resurface.
+    cur.execute("DELETE FROM sent_jobs WHERE sent_at < NOW() - INTERVAL '30 days'")
     conn.commit()
 
     # -----------------------------------------------------------------------
     # Job fetching
-    # FIX 3: Log fetch errors to stderr instead of silently swallowing them.
-    #         An empty list no longer masks a network or parsing failure.
-    # NOTE:   The hardcoded mock job below should be replaced with real HTML
-    #         parsing (e.g. BeautifulSoup) once the page structure is known.
-    #         Example stub is included but commented out.
+    # FIX (from Python audit): Log fetch errors to stderr; don't swallow them.
+    # NOTE: Replace the stub below with real BeautifulSoup scraping once the
+    #       page structure is confirmed. The stub returns one hardcoded job
+    #       only to preserve the existing send/dedup flow during development.
     # -----------------------------------------------------------------------
     def fetch_jobs():
         jobs = []
@@ -75,7 +79,7 @@ try:
             )
             r.raise_for_status()
 
-            # --- Replace the block below with real scraping ---
+            # --- Replace with real scraping ---
             # from bs4 import BeautifulSoup
             # soup = BeautifulSoup(r.text, 'html.parser')
             # for card in soup.select('.job-link'):
@@ -86,7 +90,7 @@ try:
             #         'location': 'Kyiv',
             #         'score':    90,
             #     })
-            # --- Temporary stub (single hardcoded job for structure only) ---
+            # --- Temporary stub ---
             jobs.append({
                 'id':       'workua_pm_1',
                 'title':    'Project Manager',
@@ -94,7 +98,6 @@ try:
                 'score':    90,
             })
         except requests.RequestException as e:
-            # FIX 3: Surface the error; don't swallow it silently.
             print(f"[WARN] fetch_jobs failed: {e}", file=sys.stderr)
         return jobs
 
@@ -105,12 +108,12 @@ try:
     # -----------------------------------------------------------------------
     new_jobs = []
     for job in jobs:
-        cur.execute('SELECT 1 FROM sent_jobs WHERE job_id = ?', (job['id'],))
+        cur.execute('SELECT 1 FROM sent_jobs WHERE job_id = %s', (job['id'],))
         if cur.fetchone() is None:
             new_jobs.append(job)
             cur.execute(
-                'INSERT INTO sent_jobs(job_id, sent_at) VALUES (?, ?)',
-                (job['id'], datetime.now().astimezone().isoformat())
+                'INSERT INTO sent_jobs (job_id, sent_at) VALUES (%s, %s)',
+                (job['id'], datetime.now().astimezone())
             )
     conn.commit()
 
@@ -138,10 +141,9 @@ try:
 
     # -----------------------------------------------------------------------
     # Send email
-    # FIX 4: Wrap the SMTP block in try/except with specific, actionable error
-    #         messages instead of crashing with a raw traceback.
-    # NOTE:   Gmail with 2FA requires an App Password for SMTP_PASS.
-    #         Generate one at: myaccount.google.com/apppasswords
+    # FIX (from Python audit): try/except with specific, actionable messages.
+    # NOTE: Gmail with 2FA requires an App Password for SMTP_PASS.
+    #       Generate one at: myaccount.google.com/apppasswords
     # -----------------------------------------------------------------------
     try:
         with smtplib.SMTP(SMTP_HOST, 587) as smtp:
@@ -153,7 +155,7 @@ try:
         sys.exit(
             "[ERROR] SMTP authentication failed.\n"
             "  - Check SMTP_USER and SMTP_PASS.\n"
-            "  - If using Gmail with 2FA, SMTP_PASS must be a 16-character App Password.\n"
+            "  - Gmail with 2FA requires a 16-character App Password.\n"
             "    Generate one at: https://myaccount.google.com/apppasswords"
         )
     except smtplib.SMTPException as e:
@@ -162,5 +164,4 @@ try:
         sys.exit(f"[ERROR] Network error connecting to {SMTP_HOST}:587 — {e}")
 
 finally:
-    # FIX 2: Always close the DB connection.
     conn.close()
