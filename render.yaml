@@ -2,7 +2,7 @@ services:
   - type: cron
     name: ukraine-job-agent-daily
     env: python
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install requests
     startCommand: python worker.py --daily
     schedule: "0 10 * * *"
     envVars:
@@ -16,11 +16,15 @@ services:
         sync: false
       - key: SMTP_PASS
         sync: false
+      - key: UPSTASH_REDIS_REST_URL
+        sync: false
+      - key: UPSTASH_REDIS_REST_TOKEN
+        sync: false
 
   - type: cron
     name: ukraine-job-agent-weekly
     env: python
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install requests
     startCommand: python worker.py --weekly
     schedule: "0 10 * * 0"
     envVars:
@@ -33,4 +37,8 @@ services:
       - key: SMTP_USER
         sync: false
       - key: SMTP_PASS
+        sync: false
+      - key: UPSTASH_REDIS_REST_URL
+        sync: false
+      - key: UPSTASH_REDIS_REST_TOKEN
         sync: false
