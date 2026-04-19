@@ -2,29 +2,30 @@ import os
 import sys
 import smtplib
 import requests
-import redis
 from email.mime.text import MIMEText
 from datetime import datetime
 
 # ---------------------------------------------------------------------------
 # Config from environment
 # ---------------------------------------------------------------------------
-TO_EMAIL   = os.getenv('TO_EMAIL')
-FROM_EMAIL = os.getenv('FROM_EMAIL')
-SMTP_HOST  = os.getenv('SMTP_HOST', 'smtp.gmail.com')
-SMTP_USER  = os.getenv('SMTP_USER')
-SMTP_PASS  = os.getenv('SMTP_PASS')
-REDIS_URL  = os.getenv('REDIS_URL')   # from Upstash dashboard
+TO_EMAIL                 = os.getenv('TO_EMAIL')
+FROM_EMAIL               = os.getenv('FROM_EMAIL')
+SMTP_HOST                = os.getenv('SMTP_HOST', 'smtp.gmail.com')
+SMTP_USER                = os.getenv('SMTP_USER')
+SMTP_PASS                = os.getenv('SMTP_PASS')
+UPSTASH_REDIS_REST_URL   = os.getenv('UPSTASH_REDIS_REST_URL')
+UPSTASH_REDIS_REST_TOKEN = os.getenv('UPSTASH_REDIS_REST_TOKEN')
 
 # ---------------------------------------------------------------------------
 # Validate all required env vars at startup
 # ---------------------------------------------------------------------------
 required = {
-    'TO_EMAIL':   TO_EMAIL,
-    'FROM_EMAIL': FROM_EMAIL,
-    'SMTP_USER':  SMTP_USER,
-    'SMTP_PASS':  SMTP_PASS,
-    'REDIS_URL':  REDIS_URL,
+    'TO_EMAIL':                 TO_EMAIL,
+    'FROM_EMAIL':               FROM_EMAIL,
+    'SMTP_USER':                SMTP_USER,
+    'SMTP_PASS':                SMTP_PASS,
+    'UPSTASH_REDIS_REST_URL':   UPSTASH_REDIS_REST_URL,
+    'UPSTASH_REDIS_REST_TOKEN': UPSTASH_REDIS_REST_TOKEN,
 }
 missing = [k for k, v in required.items() if not v]
 if missing:
@@ -42,23 +43,38 @@ if MODE not in VALID_MODES:
     sys.exit(f"[ERROR] Unknown mode '{MODE}'. Valid options: {VALID_MODES}")
 
 # ---------------------------------------------------------------------------
-# Redis connection (Upstash — persistent, free tier, TLS required)
-# Each job_id stored as its own key with a 30-day TTL — no schema needed.
+# Upstash Redis REST helpers — no redis-py needed, just plain HTTP via
+# requests (already a dependency). Each job_id stored as its own key with
+# a 30-day TTL; Upstash auto-expires it, no manual pruning required.
 # ---------------------------------------------------------------------------
-try:
-    r = redis.from_url(REDIS_URL, decode_responses=True, ssl_cert_reqs=None)
-    r.ping()
-except redis.RedisError as e:
-    sys.exit(f"[ERROR] Could not connect to Redis: {e}")
-
-SEEN_KEY_PREFIX = 'sent_job:'
+UPSTASH_HEADERS = {
+    'Authorization': f'Bearer {UPSTASH_REDIS_REST_TOKEN}',
+    'Content-Type':  'application/json',
+}
 TTL_SECONDS     = 30 * 24 * 60 * 60   # 30 days
+SEEN_KEY_PREFIX = 'sent_job:'
+
+def _upstash(command: list) -> dict:
+    """POST a Redis command to the Upstash REST endpoint."""
+    try:
+        resp = requests.post(
+            UPSTASH_REDIS_REST_URL,
+            headers=UPSTASH_HEADERS,
+            json=command,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except requests.RequestException as e:
+        sys.exit(f"[ERROR] Upstash REST call failed: {e}")
 
 def is_seen(job_id: str) -> bool:
-    return r.exists(f"{SEEN_KEY_PREFIX}{job_id}") == 1
+    result = _upstash(['EXISTS', f'{SEEN_KEY_PREFIX}{job_id}'])
+    return result.get('result') == 1
 
 def mark_seen(job_id: str) -> None:
-    r.setex(f"{SEEN_KEY_PREFIX}{job_id}", TTL_SECONDS, '1')
+    # SETEX key ttl_seconds value
+    _upstash(['SETEX', f'{SEEN_KEY_PREFIX}{job_id}', TTL_SECONDS, '1'])
 
 # ---------------------------------------------------------------------------
 # Job fetching
@@ -68,7 +84,7 @@ def fetch_jobs():
     try:
         response = requests.get(
             'https://www.work.ua/en/jobs-kyiv-project-manager/',
-            timeout=10
+            timeout=10,
         )
         response.raise_for_status()
 
@@ -95,7 +111,7 @@ def fetch_jobs():
     return jobs
 
 # ---------------------------------------------------------------------------
-# Deduplication — filter out jobs already seen in the last 30 days
+# Deduplication
 # ---------------------------------------------------------------------------
 jobs     = fetch_jobs()
 new_jobs = [job for job in jobs if not is_seen(job['id'])]
@@ -104,8 +120,6 @@ if not new_jobs:
     print('no new jobs')
     sys.exit(0)
 
-# Mark all new jobs as seen before sending (prevents re-send on partial
-# failure — swap order if you'd rather guarantee delivery over dedup)
 for job in new_jobs:
     mark_seen(job['id'])
 
