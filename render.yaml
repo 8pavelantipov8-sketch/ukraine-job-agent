@@ -16,3 +16,21 @@ services:
         sync: false
       - key: SMTP_PASS
         sync: false
+
+  - type: cron
+    name: ukraine-job-agent-weekly
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python worker.py --weekly
+    schedule: "0 10 * * 0"
+    envVars:
+      - key: TO_EMAIL
+        sync: false
+      - key: FROM_EMAIL
+        sync: false
+      - key: SMTP_HOST
+        value: smtp.gmail.com
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
